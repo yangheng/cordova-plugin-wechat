@@ -1,8 +1,8 @@
 # 说明
 ## 微信插件修复了IOS 下的朋友圈分享支持本地图片 和base64编码
 
-在原有插件https://github.com/floatinghotpot/cordova-plugin-wechat.git
-基础上借鉴了 https://github.com/yangheng/SocialSharing-PhoneGap-Plugin.git开源项目
+在原有插件   https://github.com/floatinghotpot/cordova-plugin-wechat.git
+基础上借鉴了 https://github.com/yangheng/SocialSharing-PhoneGap-Plugin.git 开源项目
 
 # cordova-plugin-wechat
 
@@ -14,7 +14,7 @@ Share title, description, image, and link to wechat moment(朋友圈)
 
 # Example
 
-See example in [demo js file](https://github.com/floatinghotpot/cordova-plugin-wechat/blob/master/demo/js/controllers.js).
+See example in [demo js file](https://github.com/yangheng/cordova-plugin-wechat/blob/master/demo/js/controllers.js).
 
 # Install(iOS)
 
