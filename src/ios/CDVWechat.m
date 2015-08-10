@@ -12,17 +12,67 @@
 
 #pragma mark "API"
 
+- (void)pluginInitialize
+{
+    [super pluginInitialize];
+
+    self.inited = NO;
+    self.appId = @"";
+    self.appKey = @"";
+    self.appName = @"";
+}
+
+- (void) setOptions:(CDVInvokedUrlCommand *)command {
+    NSLog(@"setOptions");
+
+    if([command.arguments count] > 0) {
+        NSDictionary* options = [command argumentAtIndex:0 withDefault:[NSNull null]];
+        [self parseOptions:options];
+    }
+
+    [self sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_OK] to:command.callbackId];
+}
+
+- (void) validateAppReg {
+    if(! self.inited) {
+        [WXApi registerApp: self.appId];
+        self.inited = true;
+    }
+}
+
+- (void) parseOptions:(NSDictionary*) options
+{
+    if ((NSNull *)options == [NSNull null]) return;
+
+    NSString* str = nil;
+
+    str = [options objectForKey:OPT_APPID];
+    if(str) self.appId = str;
+
+    str = [options objectForKey:OPT_APPKEY];
+    if(str) self.appKey = str;
+
+    str = [options objectForKey:OPT_APPNAME];
+    if(str) self.appName = str;
+}
+
+- (void)isWXAppInstalled:(CDVInvokedUrlCommand *)command
+{
+    [self validateAppReg];
+
+    CDVPluginResult *commandResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsBool:[WXApi isWXAppInstalled]];
+    
+    [self.commandDelegate sendPluginResult:commandResult callbackId:command.callbackId];
+}
+
 - (void)share:(CDVInvokedUrlCommand *)command
 {
-    [WXApi registerApp:self.wechatAppId];
+    [self validateAppReg];
 
-    CDVPluginResult *result = nil;
     // if not installed
     if (![WXApi isWXAppInstalled])
     {
-        result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"未安装微信"];
-
-        [self error:result callbackId:command.callbackId];
+        [self failWithCallbackID:command.callbackId withMessage:@"未安装微信"];
         return ;
     }
 
@@ -30,9 +80,7 @@
     NSDictionary *params = [command.arguments objectAtIndex:0];
     if (!params)
     {
-        result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"参数错误"];
-
-        [self error:result callbackId:command.callbackId];
+        [self failWithCallbackID:command.callbackId withMessage:@"参数格式错误"];
         return ;
     }
     
@@ -44,7 +92,7 @@
     // check the scene
     if ([params objectForKey:@"scene"])
     {
-        req.scene = [[params objectForKey:@"scene"] integerValue];
+        req.scene = (int)[[params objectForKey:@"scene"] integerValue];
     }
     else
     {
@@ -53,7 +101,7 @@
     
     // message or text?
     NSDictionary *message = [params objectForKey:@"message"];
-
+    
     if (message)
     {
         req.bText = NO;
@@ -61,8 +109,11 @@
         // async
         [self.commandDelegate runInBackground:^{
             req.message = [self buildSharingMessage:message];
-            
-            [WXApi sendReq:req];
+            if (![WXApi sendReq:req])
+            {
+                [self failWithCallbackID:command.callbackId withMessage:@"参数错误"];
+                self.currentCallbackId = nil;
+            }
         }];
     }
     else
@@ -70,7 +121,40 @@
         req.bText = YES;
         req.text = [params objectForKey:@"text"];
         
-        [WXApi sendReq:req];
+        if (![WXApi sendReq:req])
+        {
+            [self failWithCallbackID:command.callbackId withMessage:@"参数错误"];
+            self.currentCallbackId = nil;
+        }
+    }
+}
+
+- (void)sendAuthRequest:(CDVInvokedUrlCommand *)command
+{
+    SendAuthReq* req =[[SendAuthReq alloc] init];
+
+    // scope
+    req.scope = [command.arguments objectAtIndex:0];
+    if ([command.arguments count] > 0)
+    {
+        req.scope = [command.arguments objectAtIndex:0];
+    }
+    else
+    {
+        req.scope = @"snsapi_userinfo";
+    }
+    
+    // state
+    if ([command.arguments count] > 1)
+    {
+        req.state = [command.arguments objectAtIndex:1];
+    }
+    
+    if ([WXApi sendReq:req]) {
+        // save the callback id
+        self.currentCallbackId = command.callbackId;
+    } else {
+        [self failWithCallbackID:command.callbackId withMessage:@"参数错误"];
     }
 }
 
@@ -79,59 +163,69 @@
 /**
  * Not implemented
  */
-//- (void)onReq:(BaseReq *)req
-//{
-//
-//}
+- (void)onReq:(BaseReq *)req
+{
+    NSLog(@"%@", req);
+}
 
 - (void)onResp:(BaseResp *)resp
 {
-    CDVPluginResult *result = nil;
-    
     BOOL success = NO;
-    if([resp isKindOfClass:[SendMessageToWXResp class]])
-    {
-        switch (resp.errCode)
-        {
-            case WXSuccess:
-                result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
-                success = YES;
-            break;
-            
-            case WXErrCodeCommon:
-                result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"普通错误类型"];
-            break;
-            
-            case WXErrCodeUserCancel:
-                result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"用户点击取消并返回"];
-            break;
-            
-            case WXErrCodeSentFail:
-                result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"发送失败"];
-            break;
-            
-            case WXErrCodeAuthDeny:
-                result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"授权失败"];
-            break;
-            
-            case WXErrCodeUnsupport:
-                result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"微信不支持"];
-            break;
-        }
-    }
+    NSString *message = @"Unknown";
+    NSDictionary *response = nil;
     
-    if (!result)
+    switch (resp.errCode)
     {
-        result = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Unknown"];
+        case WXSuccess:
+            success = YES;
+            break;
+            
+        case WXErrCodeCommon:
+            message = @"普通错误类型";
+            break;
+            
+        case WXErrCodeUserCancel:
+            message = @"用户点击取消并返回";
+            break;
+            
+        case WXErrCodeSentFail:
+            message = @"发送失败";
+            break;
+            
+        case WXErrCodeAuthDeny:
+            message = @"授权失败";
+            break;
+            
+        case WXErrCodeUnsupport:
+            message = @"微信不支持";
+            break;
     }
     
     if (success)
     {
-        [self success:result callbackId:self.currentCallbackId];
+        if ([resp isKindOfClass:[SendAuthResp class]])
+        {
+            // fix issue that lang and country could be nil for iPhone 6 which caused crash.
+            SendAuthResp* authResp = (SendAuthResp*)resp;
+            response = @{
+                         @"code": authResp.code != nil ? authResp.code : @"",
+                         @"state": authResp.state != nil ? authResp.state : @"",
+                         @"lang": authResp.lang != nil ? authResp.lang : @"",
+                         @"country": authResp.country != nil ? authResp.country : @"",
+                         };
+            
+            CDVPluginResult *commandResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:response];
+            
+            [self.commandDelegate sendPluginResult:commandResult callbackId:self.currentCallbackId];
+        }
+        else
+        {
+            [self successWithCallbackID:self.currentCallbackId];
+        }
     }
     else
     {
-        [self error:result callbackId:self.currentCallbackId];
+        [self failWithCallbackID:self.currentCallbackId withMessage:message];
     }
     
     self.currentCallbackId = nil;
@@ -143,7 +237,7 @@
 {
     NSURL* url = [notification object];
     
-    if ([url isKindOfClass:[NSURL class]] && [url.scheme isEqualToString:self.wechatAppId])
+    if ([url isKindOfClass:[NSURL class]] && [url.scheme isEqualToString:self.appId])
     {
         [WXApi handleOpenURL:url delegate:self];
     }
@@ -151,24 +245,18 @@
 
 #pragma mark "Private methods"
 
-- (NSString *)wechatAppId
-{
-    if (!_wechatAppId)
-    {
-        CDVViewController *viewController = (CDVViewController *)self.viewController;
-        _wechatAppId = [viewController.settings objectForKey:@"wechatappid"];
-    }
-    
-    return _wechatAppId;
-}
-
 - (WXMediaMessage *)buildSharingMessage:(NSDictionary *)message
 {
     WXMediaMessage *wxMediaMessage = [WXMediaMessage message];
     wxMediaMessage.title = [message objectForKey:@"title"];
     wxMediaMessage.description = [message objectForKey:@"description"];
     wxMediaMessage.mediaTagName = [message objectForKey:@"mediaTagName"];
-    [wxMediaMessage setThumbImage:[self getUIImageFromURL:[message objectForKey:@"thumb"]]];
+    wxMediaMessage.messageExt = [message objectForKey:@"messageExt"];
+    wxMediaMessage.messageAction = [message objectForKey:@"messageAction"];
+    if ([message objectForKey:@"thumb"])
+    {
+        [wxMediaMessage setThumbImage:[self getUIImageFromURL:[message objectForKey:@"thumb"]]];
+    }
     
     // media parameters
     id mediaObject = nil;
@@ -179,21 +267,35 @@
     switch (type)
     {
         case CDVWXSharingTypeApp:
+            mediaObject = [WXAppExtendObject object];
+            ((WXAppExtendObject*)mediaObject).extInfo = [media objectForKey:@"extInfo"];
+            ((WXAppExtendObject*)mediaObject).url = [media objectForKey:@"url"];
         break;
     
         case CDVWXSharingTypeEmotion:
+            mediaObject = [WXEmoticonObject object];
+            ((WXEmoticonObject*)mediaObject).emoticonData = [self getNSDataFromURL:[media objectForKey:@"emotion"]];
         break;
         
         case CDVWXSharingTypeFile:
+            mediaObject = [WXFileObject object];
+            ((WXFileObject*)mediaObject).fileData = [self getNSDataFromURL:[media objectForKey:@"file"]];
         break;
         
         case CDVWXSharingTypeImage:
+            mediaObject = [WXImageObject object];
+            ((WXImageObject*)mediaObject).imageData = [self getNSDataFromURL:[media objectForKey:@"image"]];
         break;
         
         case CDVWXSharingTypeMusic:
+            mediaObject = [WXMusicObject object];
+            ((WXMusicObject*)mediaObject).musicUrl = [media objectForKey:@"musicUrl"];
+            ((WXMusicObject*)mediaObject).musicDataUrl = [media objectForKey:@"musicDataUrl"];
         break;
         
         case CDVWXSharingTypeVideo:
+            mediaObject = [WXVideoObject object];
+            ((WXVideoObject*)mediaObject).videoUrl = [media objectForKey:@"videoUrl"];
         break;
         
         case CDVWXSharingTypeWebPage:
@@ -206,22 +308,60 @@
     return wxMediaMessage;
 }
 
-- (UIImage *)getUIImageFromURL:(NSString *)thumb
+- (NSData *)getNSDataFromURL:(NSString *)url
 {
-    NSURL *thumbUrl = [NSURL URLWithString:thumb];
     NSData *data = nil;
-    
-    if ([thumbUrl isFileURL])
+
+    if ([url hasPrefix:@"http://"] || [url hasPrefix:@"https://"])
+    {
+        data = [NSData dataWithContentsOfURL:[NSURL URLWithString:url]];
+    }
+    else if([url hasPrefix:@"file://"]){
+        data = [NSData dataWithContentsOfFile:[[NSURL URLWithString:url] path]];
+    }
+    else if([url hasPrefix:@"data:"]){
+        NSURL *imageURL = [NSURL URLWithString:url];
+        data = [NSData dataWithContentsOfURL:imageURL];
+    }
+    else if([url hasPrefix:@"assets-library://"]){
+        NSURL *imageURL = [NSURL URLWithString:url];
+        data = [NSData dataWithContentsOfURL:imageURL];
+    }else
     {
         // local file
-        data = [NSData dataWithContentsOfFile:thumb];
+        url = [[NSBundle mainBundle] pathForResource:[url stringByDeletingPathExtension] ofType:[url pathExtension]];
+        data = [NSData dataWithContentsOfFile:url];
     }
-    else
-    {
-        data = [NSData dataWithContentsOfURL:thumbUrl];
-    }
+    
+    return data;
+}
 
+- (UIImage *)getUIImageFromURL:(NSString *)url
+{
+    NSData *data = [self getNSDataFromURL:url];
     return [UIImage imageWithData:data];
+}
+
+- (void)successWithCallbackID:(NSString *)callbackID
+{
+    [self successWithCallbackID:callbackID withMessage:@"OK"];
+}
+
+- (void)successWithCallbackID:(NSString *)callbackID withMessage:(NSString *)message
+{
+    CDVPluginResult *commandResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:message];
+    [self.commandDelegate sendPluginResult:commandResult callbackId:callbackID];
+}
+
+- (void)failWithCallbackID:(NSString *)callbackID withError:(NSError *)error
+{
+    [self failWithCallbackID:callbackID withMessage:[error localizedDescription]];
+}
+
+- (void)failWithCallbackID:(NSString *)callbackID withMessage:(NSString *)message
+{
+    CDVPluginResult *commandResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:message];
+    [self.commandDelegate sendPluginResult:commandResult callbackId:callbackID];
 }
 
 @end
